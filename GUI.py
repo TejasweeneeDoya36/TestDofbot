@@ -11,20 +11,300 @@ try:
 
     DOFBOT_AVAILABLE = True
 except ImportError:
-    print("Arm_Lib not available. Running in simulation mode.")
-    DOFBOT_AVAILABLE = False
+    import cv2
+    import tkinter as tk
+    from tkinter import Label, Button
+    from PIL import Image, ImageTk
+    import threading
+    import queue
+    import time
+
+    try:
+        from Arm_Lib import Arm_Device
+
+        DOFBOT_AVAILABLE = True
+    except ImportError:
+        print("Arm_Lib not available. Running in simulation mode.")
+        DOFBOT_AVAILABLE = False
 
 
-    class Arm_Device:
-        def __init__(self):
-            pass
+    class SimpleDOFBOTCamera:
+        def __init__(self, window):
+            self.window = window
+            self.window.title("DOFBOT Camera Viewer")
 
-        def Arm_serial_servo_write(self, *args):
-            print(f"Simulated servo move: {args}")
+            # Set window size
+            self.window.geometry("1000x700")
 
-        def Arm_serial_servo_write6(self, *args):
-            print(f"Simulated 6-servo move: {args}")
+            # Setup GUI
+            self.setup_gui()
 
+            # Initialize variables
+            self.cap = None
+            self.running = False
+            self.frame_queue = queue.Queue(maxsize=2)
+            self.last_time = time.time()
+            self.frame_count = 0
+
+            # Try to initialize camera immediately
+            self.window.after(100, self.initialize_camera)
+
+        def setup_gui(self):
+            """Setup the minimal GUI layout"""
+            # Main container
+            main_frame = tk.Frame(self.window)
+            main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+            # Video display - larger and centered
+            self.video_label = Label(main_frame, bg="black", text="Initializing DOFBOT Camera...",
+                                     font=("Arial", 16), fg="white", relief="solid", borderwidth=2)
+            self.video_label.pack(fill="both", expand=True, pady=(0, 10))
+
+            # Status bar at bottom of video
+            status_frame = tk.Frame(main_frame)
+            status_frame.pack(fill="x", pady=(0, 10))
+
+            self.status_label = Label(status_frame, text="Status: Initializing...", fg="blue",
+                                      font=("Arial", 11), anchor="w")
+            self.status_label.pack(side="left", fill="x", expand=True)
+
+            self.fps_label = Label(status_frame, text="FPS: --", fg="green",
+                                   font=("Arial", 11))
+            self.fps_label.pack(side="right")
+
+            # Button frame - only 2 buttons as requested
+            button_frame = tk.Frame(main_frame)
+            button_frame.pack(pady=10)
+
+            # Start button - larger and prominent
+            self.start_btn = Button(button_frame, text="START CAMERA", command=self.start_camera,
+                                    width=20, height=2, bg="#4CAF50", fg="white",
+                                    font=("Arial", 12, "bold"), relief="raised", cursor="hand2")
+            self.start_btn.pack(side="left", padx=20)
+
+            # Stop button
+            self.stop_btn = Button(button_frame, text="STOP CAMERA", command=self.stop_camera,
+                                   width=20, height=2, bg="#F44336", fg="white", state="disabled",
+                                   font=("Arial", 12, "bold"), relief="raised", cursor="hand2")
+            self.stop_btn.pack(side="left", padx=20)
+
+            # Connection status
+            status_text = "DOFBOT: Connected" if DOFBOT_AVAILABLE else "DOFBOT: Simulation Mode"
+            status_color = "#4CAF50" if DOFBOT_AVAILABLE else "#FF9800"
+            connection_label = Label(main_frame, text=status_text, fg=status_color,
+                                     font=("Arial", 10, "italic"))
+            connection_label.pack(pady=5)
+
+        def initialize_camera(self):
+            """Initialize camera without starting it"""
+            self.status_label.config(text="Status: Ready - Click START CAMERA", fg="green")
+
+        def start_camera(self):
+            """Start the camera stream"""
+            if not self.running:
+                self.status_label.config(text="Status: Starting camera...", fg="orange")
+
+                # Try to open DOFBOT camera (commonly index 0)
+                camera_indices = [0, 1, 2, 3]  # Try multiple indices
+
+                for cam_index in camera_indices:
+                    self.cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)  # Use DSHOW on Windows
+                    if self.cap.isOpened():
+                        # Test if we can actually read a frame
+                        ret, test_frame = self.cap.read()
+                        if ret:
+                            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to beginning
+                            print(f"DOFBOT Camera found at index {cam_index}")
+                            break
+                        else:
+                            self.cap.release()
+
+                if self.cap and self.cap.isOpened():
+                    # Set optimal camera properties for DOFBOT
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    self.cap.set(cv2.CAP_PROP_FPS, 30)
+
+                    # Get actual camera resolution
+                    width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    fps = self.cap.get(cv2.CAP_PROP_FPS)
+
+                    print(f"Camera resolution: {width}x{height}, FPS: {fps}")
+
+                    self.running = True
+                    self.start_btn.config(state="disabled")
+                    self.stop_btn.config(state="normal")
+                    self.status_label.config(text="Status: Camera Running", fg="green")
+
+                    # Clear any previous text from video label
+                    self.video_label.config(text="")
+
+                    # Start camera thread
+                    self.camera_thread = threading.Thread(target=self.capture_frames, daemon=True)
+                    self.camera_thread.start()
+
+                    # Start GUI update
+                    self.update_gui()
+                else:
+                    self.status_label.config(text="Status: No camera found", fg="red")
+                    self.video_label.config(
+                        text="ERROR: No Camera Found\n\nPlease:\n1. Check DOFBOT is connected\n2. Ensure camera is not in use\n3. Try restarting the DOFBOT",
+                        font=("Arial", 14), fg="white")
+
+        def stop_camera(self):
+            """Stop the camera stream"""
+            self.running = False
+
+            self.start_btn.config(state="normal")
+            self.stop_btn.config(state="disabled")
+            self.status_label.config(text="Status: Stopped", fg="blue")
+            self.fps_label.config(text="FPS: --")
+
+            if self.cap:
+                self.cap.release()
+                self.cap = None
+
+            # Clear display and show message
+            self.video_label.config(image=None, text="Camera Stopped\n\nClick START CAMERA to begin",
+                                    font=("Arial", 16), fg="white")
+
+        def capture_frames(self):
+            """Capture frames in separate thread"""
+            print("Capture thread started")
+
+            while self.running and self.cap:
+                ret, frame = self.cap.read()
+
+                if not ret:
+                    print("Failed to read frame from DOFBOT camera")
+                    self.window.after(0, self.on_camera_error)
+                    break
+
+                # Put frame in queue
+                try:
+                    self.frame_queue.put_nowait(frame)
+                except queue.Full:
+                    try:
+                        self.frame_queue.get_nowait()
+                        self.frame_queue.put_nowait(frame)
+                    except:
+                        pass
+
+                # Small delay to prevent overwhelming
+                time.sleep(0.01)
+
+            print("Capture thread ended")
+
+        def on_camera_error(self):
+            """Handle camera errors"""
+            self.stop_camera()
+            self.status_label.config(text="Status: Camera Error", fg="red")
+            self.video_label.config(
+                text="Camera Connection Lost\n\nPlease:\n1. Check DOFBOT connection\n2. Click START CAMERA to retry",
+                font=("Arial", 14), fg="white")
+
+        def update_gui(self):
+            """Update GUI with latest frame"""
+            if not self.running:
+                return
+
+            try:
+                # Get frame from queue
+                frame = self.frame_queue.get_nowait()
+
+                # Calculate FPS
+                current_time = time.time()
+                self.frame_count += 1
+
+                if current_time - self.last_time >= 0.5:  # Update FPS every 0.5 seconds
+                    fps = self.frame_count / (current_time - self.last_time)
+                    self.fps_label.config(text=f"FPS: {fps:.1f}")
+                    self.frame_count = 0
+                    self.last_time = current_time
+
+                # Get current label dimensions for dynamic resizing
+                label_width = self.video_label.winfo_width()
+                label_height = self.video_label.winfo_height()
+
+                # Use default size if dimensions not available yet
+                if label_width < 10 or label_height < 10:
+                    display_width = 800
+                    display_height = 600
+                else:
+                    # Leave some margin
+                    display_width = label_width - 20
+                    display_height = label_height - 20
+
+                # Resize frame to fit label while maintaining aspect ratio
+                height, width = frame.shape[:2]
+                aspect_ratio = width / height
+
+                if display_width / display_height > aspect_ratio:
+                    # Fit to height
+                    new_height = display_height
+                    new_width = int(new_height * aspect_ratio)
+                else:
+                    # Fit to width
+                    new_width = display_width
+                    new_height = int(new_width / aspect_ratio)
+
+                # Resize if needed
+                if new_width > 0 and new_height > 0:
+                    frame = cv2.resize(frame, (new_width, new_height))
+
+                # Convert to RGB
+                img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                # Convert to PIL Image
+                img_pil = Image.fromarray(img_rgb)
+
+                # Convert to PhotoImage
+                imgtk = ImageTk.PhotoImage(image=img_pil)
+
+                # Update label
+                self.video_label.imgtk = imgtk
+                self.video_label.configure(image=imgtk)
+
+            except queue.Empty:
+                # No frame yet, continue
+                pass
+            except Exception as e:
+                print(f"GUI update error: {e}")
+
+            # Schedule next update (30 FPS ~ 33ms)
+            self.window.after(33, self.update_gui)
+
+        def on_closing(self):
+            """Cleanup on window close"""
+            self.stop_camera()
+            self.window.destroy()
+
+
+    def main():
+        """Main function"""
+        root = tk.Tk()
+        app = SimpleDOFBOTCamera(root)
+
+        # Handle window closing
+        root.protocol("WM_DELETE_WINDOW", app.on_closing)
+
+        # Center window on screen
+        root.update_idletasks()
+        width = root.winfo_width()
+        height = root.winfo_height()
+        x = (root.winfo_screenwidth() // 2) - (width // 2)
+        y = (root.winfo_screenheight() // 2) - (height // 2)
+        root.geometry(f'{width}x{height}+{x}+{y}')
+
+        # Make window resizable
+        root.minsize(800, 600)
+
+        root.mainloop()
+
+
+    if __name__ == "__main__":
+        main()
 
 class SimpleDOFBOTCamera:
     def __init__(self, window):
