@@ -5,8 +5,7 @@ from PIL import Image, ImageTk
 import threading
 import queue
 import time
-
-# Try to import ArmLib for DOFBOT control
+from Arm_Lib import Arm_Device
 try:
     from Arm_Lib import Arm_Device
 
